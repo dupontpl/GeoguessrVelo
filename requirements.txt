@@ -3,3 +3,5 @@ geopandas
 shapely
 folium
 streamlit-folium
+osmnx
+networkx

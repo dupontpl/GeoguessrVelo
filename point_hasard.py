@@ -1,19 +1,31 @@
 import random
+import os
+import numpy as np
 import geopandas as gpd
-from shapely.geometry import Point
 import streamlit as st
 import folium
+from shapely.geometry import box
 from streamlit_folium import st_folium
 
-GEOJSON_PATH = "departements.geojson"
+# =========================
+# CONFIG
+# =========================
 
-st.title("Geoguessr version vélo")
+ROUTES_DIR = "routes"
+DEPT_GEOJSON = "departements.geojson"
+CELL_SIZE = 0.04
+
+st.title("🚴 Point vélo aléatoire")
+
+# =========================
+# LOAD DEPARTEMENTS
+# =========================
 
 @st.cache_data
-def load_data():
-    return gpd.read_file(GEOJSON_PATH)
+def load_depts():
+    return gpd.read_file(DEPT_GEOJSON)
 
-gdf = load_data()
+gdf = load_depts()
 
 dept_dict = {
     f"{row['nom']} ({row['code']})": str(row["code"])
@@ -22,82 +34,130 @@ dept_dict = {
 
 dept_names = sorted(dept_dict.keys())
 
+selected = st.selectbox(
+    "Choisir un département",
+    dept_names,
+    index=dept_names.index("Isère (38)") if "Isère (38)" in dept_names else 0
+)
+
+dept_code = dept_dict[selected]
+ROUTES_FILE = f"{ROUTES_DIR}/routes_{dept_code}.parquet"
 
 # =========================
-# SESSION STATE INIT
+# LOAD ROUTES (SI EXISTE)
+# =========================
+
+@st.cache_data
+def load_routes(path):
+    if os.path.exists(path):
+        return gpd.read_parquet(path)
+    return None
+
+routes = load_routes(ROUTES_FILE)
+
+# =========================
+# BUILD GRID CACHE SAFE
+# =========================
+
+@st.cache_data
+def build_valid_cells_from_file(path, cell_size):
+
+    routes = gpd.read_parquet(path)
+
+    minx, miny, maxx, maxy = routes.total_bounds
+
+    xs = np.arange(minx, maxx, cell_size)
+    ys = np.arange(miny, maxy, cell_size)
+
+    valid_cells = []
+
+    for x in xs:
+        for y in ys:
+            b = box(x, y, x+cell_size, y+cell_size)
+
+            if routes.intersects(b).any():
+                valid_cells.append(b)
+
+    return valid_cells
+
+if routes is not None:
+    # st.write("Segments routes :", len(routes))
+    valid_cells = build_valid_cells_from_file(ROUTES_FILE, CELL_SIZE)
+    # st.write("Cellules avec routes :", len(valid_cells))
+else:
+    st.warning("⚠️ Pas de fichier routes pré-calculé → fallback point aléatoire")
+
+# =========================
+# RANDOM FUNCTIONS
+# =========================
+
+def random_point_balanced(routes, cells):
+
+    cell = random.choice(cells)
+    subset = routes[routes.intersects(cell)]
+    line = subset.sample(1).geometry.iloc[0]
+    p = line.interpolate(random.random(), normalized=True)
+
+    return p.y, p.x
+
+
+def random_point_in_dept(code):
+
+    geom = gdf[gdf["code"] == code].geometry.iloc[0]
+    minx, miny, maxx, maxy = geom.bounds
+
+    while True:
+        x = random.uniform(minx, maxx)
+        y = random.uniform(miny, maxy)
+
+        if geom.contains(gpd.points_from_xy([x], [y])[0]):
+            return y, x
+
+# =========================
+# SESSION STATE
 # =========================
 
 if "last_point" not in st.session_state:
     st.session_state.last_point = None
 
-if "last_geom" not in st.session_state:
-    st.session_state.last_geom = None
-
-
-# =========================
-# RANDOM POINT
-# =========================
-
-def random_point_in_department(dept_code):
-
-    dept = gdf[gdf["code"] == dept_code]
-    geometry = dept.geometry.iloc[0]
-
-    minx, miny, maxx, maxy = geometry.bounds
-
-    while True:
-        lon = random.uniform(minx, maxx)
-        lat = random.uniform(miny, maxy)
-
-        if geometry.contains(Point(lon, lat)):
-            return lat, lon, geometry
-
-
 # =========================
 # UI
 # =========================
 
-selected = st.selectbox(
-    "Choisir un département",
-    dept_names,
-    index=dept_names.index("Isère (38)")
-)
+if st.button("🎲 Générer point au hasard"):
 
-# --- ACTION ---
-if st.button("Générer un point GPS"):
-    code = dept_dict[selected]
-    lat, lon, geometry = random_point_in_department(code)
+    if routes is not None and len(routes) > 0:
+        lat, lon = random_point_balanced(routes, valid_cells)
+    else:
+        lat, lon = random_point_in_dept(dept_code)
 
     st.session_state.last_point = (lat, lon)
-    st.session_state.last_geom = geometry
-
 
 # =========================
-# AFFICHAGE (EN DEHORS DU BOUTON)
+# DISPLAY
 # =========================
 
 if st.session_state.last_point:
 
     lat, lon = st.session_state.last_point
-    geometry = st.session_state.last_geom
 
-    st.success(f"Point : {lat:.6f}, {lon:.6f}")
+    # st.success(f"Point : {lat:.6f}, {lon:.6f}")
 
-    # m = folium.Map(location=[lat, lon], zoom_start=12, tiles="CartoDB positron")
-    m = folium.Map(location=[lat, lon], zoom_start=10)
-    
+    coords_str = f"{lat:.6f}, {lon:.6f}"
+    # st.text_input("📋 Coordonnées GPS (copier-coller)", value=coords_str)
+    st.code(coords_str, language="text")
 
-    # folium.GeoJson(
-    #     geometry.__geo_interface__,
-    # ).add_to(m)
+    m = folium.Map(location=[lat, lon], zoom_start=12)
 
     folium.CircleMarker(
-        location=[lat, lon],
-        radius=8,
+        [lat, lon],
+        radius=7,
         weight=2,
         fill=True,
-        fill_opacity=0.9,
-        popup="Point"
+        fill_opacity=1
     ).add_to(m)
 
     st_folium(m, width=700, height=500)
+
+    street_url = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
+    st.link_button("👁️ Street View", street_url)
