@@ -1,5 +1,15 @@
+<<<<<<< HEAD
 streamlit
 geopandas
 shapely
 folium
 streamlit-folium
+=======
+streamlit
+geopandas
+shapely
+folium
+streamlit-folium
+osmnx
+networkx
+>>>>>>> 584bc08 (route seulement)
